@@ -25,7 +25,7 @@ unsigned long timepoint_measure;
 //Sensor readings stored in two char array
 char BattVal[3]; // "80" = [0,1,2], size of the sting + 1
 char DepthVal[5]; // "0.99"= [0,1,2,3,4]-->[0,.,9,9,\0];
-char Token[33] = ""; //UNAM: f4c12b5e6d0ed7125f3f7bb157a937bf SkyAlert Demo b90f7eb37aab6954ea222b3eeb780c60; Smability Demo: f9122c9130290998d1c4799d9d2f19e9 Serial: 83523091810440272
+char Token[33] = "";
 bool flag = false;
 bool flagINT = true;
 int value;
