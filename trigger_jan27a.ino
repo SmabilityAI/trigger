@@ -25,7 +25,7 @@ unsigned long timepoint_measure;
 //Sensor readings stored in two char array
 char BattVal[3]; // "80" = [0,1,2], size of the sting + 1
 char DepthVal[5]; // "0.99"= [0,1,2,3,4]-->[0,.,9,9,\0];
-char Token[33] = "f4c12b5e6d0ed7125f3f7bb157a937bf"; //UNAM: f4c12b5e6d0ed7125f3f7bb157a937bf SkyAlert Demo b90f7eb37aab6954ea222b3eeb780c60; Smability Demo: f9122c9130290998d1c4799d9d2f19e9 Serial: 83523091810440272
+char Token[33] = ""; //UNAM: f4c12b5e6d0ed7125f3f7bb157a937bf SkyAlert Demo b90f7eb37aab6954ea222b3eeb780c60; Smability Demo: f9122c9130290998d1c4799d9d2f19e9 Serial: 83523091810440272
 bool flag = false;
 bool flagINT = true;
 int value;
@@ -342,7 +342,7 @@ void SIM_STATES(int state){
       
       //dtostrf(depth/1000.0, 4, 2, DepthVal); // depth is float variable, 4 is the lenght of the string what will be created, 2 number of digits after the decimal point to print, DepthVal the array to store the results
 
-      /* Smability-SkyAlert V1.001
+      /* Smability-V1.001
        * device serial:XXXX
        * device token: YYYY
        * variables: Battery, Depth 
