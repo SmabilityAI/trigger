@@ -70,7 +70,7 @@ struct CalibrationCoeffs {
   bool isCalibrated;
 } coeffs = {0.0, 5000.0, 0.0, 5000.0,false}; // Default values; all in mm (0-5000mm = 0-5m)
 
-const char* awsServerName = "AT+HTTPPARA=\"URL\",\"http://34.224.5.68/SetURL?deviceID=%s&distance=%s&rate=%s&batt=%s\"";
+const char* awsServerName = "AT+HTTPPARA=\"URL\",\"http://XX.YYY.Z.WW/SetURL?deviceID=%s&distance=%s&rate=%s&batt=%s\"";
 
 //"http://34.224.5.68/SetURL?deviceID=SMAAWA_001&distance=50.5&rate=-22.3&batt=90"
 
