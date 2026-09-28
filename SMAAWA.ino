@@ -1,4 +1,4 @@
-/* Hardware: Arduino Mini Pro 5V/16MHz
+* Hardware: Arduino Mini Pro 5V/16MHz
  * Connections:
  * - RG-11 Rain Sensor: Digital Pin 2; not used for SMAAWA Models
  * - 4-20mA Depth Sensor: Analog Pin A6
@@ -48,9 +48,10 @@ unsigned long time_now = 0;
 char BattVal[4]; // "80" = [0,1,2], size of the sting + 1
 char DepthVal[8]="00.0"; // "0.99"= [0,1,2,3,4]-->[0,.,9,9,\0];
 char rateVal[8]="00.0"; // cm/cycle
-char Token[16] = "SMAAWA_001"; //Corredor Verde
+char Token[16] = "SMAAWA_003"; //Planta Fisica
 bool flag = false;                                   
 bool flagINT = true;
+bool flagSMS; //new flag
 int value;
 int mode;
 int period = 5000;
@@ -70,9 +71,9 @@ struct CalibrationCoeffs {
   bool isCalibrated;
 } coeffs = {0.0, 5000.0, 0.0, 5000.0,false}; // Default values; all in mm (0-5000mm = 0-5m)
 
-const char* awsServerName = "AT+HTTPPARA=\"URL\",\"http://yy.xx.z.ww/SetURL?deviceID=%s&distance=%s&rate=%s&batt=%s\"";
+const char* awsServerName = "AT+HTTPPARA=\"URL\",\"http://34.224.5.68/SetURL?deviceID=%s&distance=%s&rate=%s&batt=%s\"";
 
-//"http://yy.xx.z.ww/SetURL?deviceID=SMAAWA_001&distance=50.5&rate=-22.3&batt=90"
+//"http://34.224.5.68/SetURL?deviceID=SMAAWA_001&distance=50.5&rate=-22.3&batt=90"
 
 
 // ===== SAVE COEFFICIENTS TO EEPROM =====
@@ -135,6 +136,8 @@ void setup(){
   StateMachinetimer = 0;             // ✅ Initialize to 0
   
   attachInterrupt(digitalPinToInterrupt(RG9_Pin), rgisr, LOW);
+
+  flagSMS = true;
 }
 
 // ===== ISR for Rain Mode =====
@@ -156,7 +159,7 @@ void DEVICE_STATES(){
     
     case 0: //Normal Mode
     
-     Serial.println(F(" DEVICE_STATE: NORMAL MODE ")); // 65 sec sampling
+     Serial.println(F(" DEVICE_STATE: NORMAL MODE ")); // 5 min sampling
 
       if (justWoke) {
         sleep();
@@ -217,6 +220,9 @@ void SIM_STATES(int state){
     case SENSORS:{
     
       Serial.println(F("    STATE 1: POWER ON SENSORS   "));
+
+      flagSMS=true; //we need this flag withing the state-machine too, void setup() function only works at the start-up, 
+                    //hence we need it explicitly again at STATE-MACHINE level to retry the ATTACH state in case of a lose connection
       
       if(state == 1){//Rain mode
         powerONSensor();
@@ -258,7 +264,7 @@ void SIM_STATES(int state){
          
           StateMachinetimer = millis();
 
-          SIM_state = SENDPARA;
+          SIM_state = CHECKSMS; //Prior STATE: SENDPARA
           
          //}
       }
@@ -274,6 +280,8 @@ void SIM_STATES(int state){
       powerONSIM(); //Power ON SIM800L
       
       SIM_InitialTime = millis(); //Record SIM -ON- time
+
+      //sendATcommand("ATE0", "OK", 2000);   // <-- ADD THIS: disable command/data echo
 
       battery();
 
@@ -314,7 +322,7 @@ void SIM_STATES(int state){
           }
           Serial.println(F("✓ Serial2 buffer flushed"));  
       } else{
-          //SIM_state = SIMOFF;   //otherwise will hang if not registered, we will try again in one hour
+          //SIM_state = SIMOFF;   //otherwise will hang if not registered, we will try again in 5 min
           SIM_state = ENDGPRS;
           Serial.println(F("End GPRS, not Registered to the Network!"));
       }
@@ -336,12 +344,29 @@ void SIM_STATES(int state){
           Serial.println(F("✓ Calibration SMS Found & Processed"));
           
           // Cleanup messages
-          sendATcommand("AT+CMGD=1,4", "OK", 2000); 
-          
-          SIM_state = ATTACHGPRS; // Or restart loop
+          sendATcommand("AT+CMGD=1,4", "OK", 2000);
+
+          if (flagSMS == true){     //flagSMS is used only at the start-up (1st loop), one ATTACHGPRS Only
+            SIM_state = ATTACHGPRS; // Or restart loop
+          } else {
+            SIM_state = READSENSOR;
+                                  // START->SENSORS->PWRSIM->CHECKSMS->ATTACHGPRS->INITHTTP->SENDPARA->READSENSORS-SENDPARA->READSENSORS
+                                  // READSENSORS->SENDPARA->READSENSORS-SENDPARA-->it never checks for new callibration commands (without flagSMS flag) 
+                                  
+                                  // 2nd loop, after reading sensors, should check calibration SMS-->processed-->read sensors (we dont have this logic)
+                                  // READSENSORS-->CHECKSMS-->SENDPARA-->READSENSORS--CHECKSMS-->this is the valid loop
+                                  // use state-machine flags, to signal 1st loop and 2dn, 3rd,..loop transitions
+            
+            
+            }
       } else {
           Serial.println(F("No Calibration SMS found"));
-          SIM_state = ATTACHGPRS;
+          
+          if (flagSMS == true){ 
+            SIM_state = ATTACHGPRS;
+          } else {
+            SIM_state = SENDPARA;
+          }
       }
       
     } break;
@@ -351,6 +376,9 @@ void SIM_STATES(int state){
       Serial.println(F("    STATE 4: ATTACH GPRS    "));
 
       countloop = 0; // reset while loop counter
+
+      flagSMS = false;            //used at the start-up (first cycle) and with SIM800L connection re-tries
+                                  //if all goes well CHECKSMS transition only to SENDPARA
 
       // 1. Buffer Initialization
       constexpr size_t MAX_STR_LEN = 50;
@@ -416,7 +444,7 @@ void SIM_STATES(int state){
       
       if  (countloop < 3){ //countloop < 3
         
-        SIM_state = READSENSOR;
+        SIM_state = READSENSOR; //Previous STATE: READSENSOR
         Serial.println(F("Init HTTP functional!"));
       }
       else{
@@ -484,7 +512,7 @@ void SIM_STATES(int state){
           
           //SIM_state = ENDGPRS; -->use only if optical sensor is attached
           
-          SIM_state = SIMOFF;
+          SIM_state = READSENSOR; //Previous STATE: SIMOFF
           justWoke = true;
           
         }
@@ -526,7 +554,7 @@ void SIM_STATES(int state){
       //end SIMOFF
       
       state = 0;
-      powerOFFSensor();
+      //powerOFFSensor();  //we keep all the sensors ON, normal power consumption
       delay(500);
       
       
@@ -546,7 +574,60 @@ void SIM_STATES(int state){
   delay(1); //stability
 }
 
-// ===== CHECK INCOMING HOLOGRAM DATA =====
+// ===== CHECK INCOMING HOLOGRAM DATA NEW FUNCTION =====
+bool checkIncomingHologramData() {
+    Serial.println(F("=== Reading SMS Buffer (Safe Mode) ==="));
+
+    // 1. FIXED BUFFER (static memory, no heap fragmentation)
+    static char smsBuffer[150];
+    memset(smsBuffer, 0, sizeof(smsBuffer)); // Clear the buffer
+    int idx = 0;
+
+    unsigned long startTime = millis();
+
+    // 2. DRAIN MODEM UART INTO THE FIXED BUFFER
+    while (millis() - startTime < 4000) { // 4 second timeout
+        if (Serial2.available()) {
+            char c = Serial2.read();
+            if (idx < (int)(sizeof(smsBuffer) - 1)) {
+                smsBuffer[idx++] = c;
+            }
+            startTime = millis(); // reset timeout while data is still arriving
+        }
+    }
+
+    if (idx == 0) return false;
+
+    // 3. C-STRING SEARCH — only one tag type in SMAAWA (CAL:), so no need
+    //    for the multi-tag priority logic from the air-quality version.
+    //    findLast() keeps the same "take the newest command in the buffer"
+    //    behavior in case more than one SMS/CAL command is queued.
+    auto findLast = [](char* haystack, const char* needle) -> char* {
+        char* last = NULL;
+        char* current = strstr(haystack, needle);
+        while (current != NULL) {
+            last = current;
+            current = strstr(current + 1, needle);
+        }
+        return last;
+    };
+
+    char* foundPtr = findLast(smsBuffer, "CAL:");
+
+    if (foundPtr != NULL) {
+        Serial.println(F("Found LATEST CAL: command"));
+        // Single String allocation, right at the boundary into the existing
+        // parser — local, short-lived, freed as soon as the function returns.
+        processCalibrationCommand(foundPtr);
+        return true;
+    }
+
+    Serial.println(F("No valid calibration header found."));
+    return false;
+}
+
+// ===== CHECK INCOMING HOLOGRAM DATA OLD FUNCTION =====
+/*
 bool checkIncomingHologramData() {
     Serial.println(F("=== Reading SMS Buffer ==="));
     
@@ -616,9 +697,79 @@ bool checkIncomingHologramData() {
     
     return false;
 }
+*/
+// ===== PROCESS CALIBRATION COMMAND NEW FUNCTION =====
+void processCalibrationCommand(char* data) {
+  Serial.println(F("\n=== Processing Calibration Command ==="));
 
+  // 1. Find "CAL:" header
+  char* calPtr = strstr(data, "CAL:");
+  if (calPtr == NULL) {
+    Serial.println(F("✗ Error: No 'CAL:' prefix found"));
+    return;
+  }
 
-// ===== PROCESS CALIBRATION COMMAND =====
+  // 2. Move pointer past "CAL:" to the payload start
+  char* payload = calPtr + 4; // strlen("CAL:") == 4
+
+  // Skip any leading whitespace (strtok/atof don't need this, but keeps
+  // the debug print clean)
+  while (*payload == ' ' || *payload == '\t') payload++;
+
+  Serial.print(F("Raw Payload Received: ["));
+  Serial.print(payload);
+  Serial.println(F("]"));
+
+  // 3. TOKENIZE IN PLACE — no String allocations at all.
+  // strtok() writes '\0' over each comma directly inside smsBuffer;
+  // that's safe since smsBuffer is memset() fresh on the next SMS read.
+  float tempValues[4];
+  int count = 0;
+
+  char* token = strtok(payload, ",");
+  while (token != NULL && count < 4) {
+    tempValues[count] = atof(token); // atof stops at first non-numeric char,
+    count++;                         // so trailing \r, "OK", quotes are harmless
+    token = strtok(NULL, ",");
+  }
+
+  // 4. VALIDATION: Did we get exactly 4 numbers?
+  if (count != 4) {
+    Serial.print(F("✗ Error: Expected 4 values, got "));
+    Serial.println(count);
+    sendCalibrationResponse(false);
+    return;
+  }
+
+  // 5. Logic Validation: Check Low vs High ranges (unchanged from original)
+  if (tempValues[0] >= tempValues[1]) {
+    Serial.println(F("✗ Error: Raw Low must be less than Raw High"));
+    sendCalibrationResponse(false);
+    return;
+  }
+  if (tempValues[2] >= tempValues[3]) {
+    Serial.println(F("✗ Error: Ref Low must be less than Ref High"));
+    sendCalibrationResponse(false);
+    return;
+  }
+
+  // 6. Apply Values (Atomic Update) — unchanged
+  coeffs.rawLow  = tempValues[0];
+  coeffs.rawHigh = tempValues[1];
+  coeffs.refLow  = tempValues[2];
+  coeffs.refHigh = tempValues[3];
+  coeffs.isCalibrated = true;
+
+  // 7. Save to EEPROM and Confirm — unchanged
+  saveCoefficientsToEEPROM();
+
+  Serial.println(F("✓ Calibration Success. New Coefficients:"));
+  printCoefficients();
+  sendCalibrationResponse(true);
+}
+
+// ===== PROCESS CALIBRATION COMMAND OLD FUNCTION =====
+/*
 void processCalibrationCommand(String data) {
   Serial.println(F("\n=== Processing Calibration Command ==="));
 
@@ -696,8 +847,57 @@ void processCalibrationCommand(String data) {
   printCoefficients();
   sendCalibrationResponse(true);
 }
+*/
 
-// ===== SEND CALIBRATION RESPONSE =====
+// ===== SEND CALIBRATION RESPONSE NEW FUNCTION =====
+void sendCalibrationResponse(bool success) {
+  char response[80]; // fixed buffer, no heap allocation
+
+  if (success) {
+    
+    Serial.println(F("✓ CALIBRATION APPLIED & SAVED"));
+
+    char a[10], b[10], c[10], d[10];
+    dtostrf(coeffs.rawLow,  1, 2, a);
+    dtostrf(coeffs.rawHigh, 1, 4, b);
+    dtostrf(coeffs.refLow,  1, 4, c);
+    dtostrf(coeffs.refHigh, 1, 4, d);
+
+    snprintf(response, sizeof(response),
+             "CAL_SUCCESS:a=%s,b=%s,c=%s,d=%s", a, b, c, d);
+
+    Serial.print(F("Response: "));
+    Serial.println(response);
+    /*
+    Serial.println(F("✓ CALIBRATION APPLIED & SAVED"));
+
+    snprintf(response, sizeof(response),
+             "CAL_SUCCESS:a=%.2f,b=%.4f,c=%.4f,d=%.4f",
+             coeffs.rawLow, coeffs.rawHigh, coeffs.refLow, coeffs.refHigh);
+
+    Serial.print(F("Response: "));
+    Serial.println(response);
+    */
+  }
+  else {
+    snprintf(response, sizeof(response),
+             "CAL_ERROR:Invalid coefficients format");
+
+    Serial.println(F("✗ CALIBRATION FAILED"));
+    Serial.println(response);
+    Serial.println(F("Check SMS format: CAL:rawLow,rawHigh,refLow,refHigh"));
+  }
+
+  //Serial.println("Sending response: " + response);  // no longer needed, printed above
+  //sendDataToHologram(response); // if you re-enable this, sendDataToHologram
+                                   // takes a String — see note below
+}
+
+
+
+
+// ===== SEND CALIBRATION RESPONSE OLD FUNCTION =====
+/*
 void sendCalibrationResponse(bool success) {
   String response;
   
@@ -715,16 +915,101 @@ void sendCalibrationResponse(bool success) {
   //Serial.println("Sending response: " + response);
   //sendDataToHologram(response);
 }
+*/
+// ===== PRINT COEFFICIENTS NEW FUNCTION =====
+void printCoefficients() {
+  Serial.println(F("\n====== CALIBRATION REPORT ======"));
 
-// ===== PRINT COEFFICIENTS =====
+  Serial.print(F("[DEPTH] Status: "));
+  if (coeffs.isCalibrated) {
+    Serial.println(F("CALIBRATED"));
+    Serial.print(F("   RawL: ")); Serial.print(coeffs.rawLow, 2);
+    Serial.print(F(" RawH: "));   Serial.println(coeffs.rawHigh, 4);
+    Serial.print(F("   RefL: ")); Serial.print(coeffs.refLow, 4);
+    Serial.print(F(" RefH: "));   Serial.println(coeffs.refHigh, 4);
+  } else {
+    Serial.println(F("RAW (Uncalibrated)"));
+  }
+
+  Serial.println(F("=================================\n"));
+}
+
+
+// ===== PRINT COEFFICIENTS OLD FUNCTION=====
+/*
 void printCoefficients() {
   Serial.println("a = " + String(coeffs.rawLow, 2));
   Serial.println("b = " + String(coeffs.rawHigh, 4));
   Serial.println("c = " + String(coeffs.refLow, 4));
   Serial.println("d = " + String(coeffs.refHigh, 4)); 
 }
+*/
 
-// ===== SEND DATA TO HOLOGRAM =====
+// ===== SEND DATA TO HOLOGRAM NEW FUNCTION =====
+
+void sendDataToHologram(const char* data) {
+
+  Serial.println(F("=== Sending to Hologram via SMS ==="));
+  Serial.print(F("Data to send: "));
+  Serial.println(data);
+
+  int countloop = 0;
+
+  // Enable SMS text mode
+  while (sendATcommand("AT+CMGF=1", "OK", 2000) != 1) {
+    countloop++;
+    if (countloop >= 2) {
+      Serial.println(F("Failed to set SMS mode"));
+      return;
+    }
+  }
+
+  char smsCmd[50];
+  snprintf(smsCmd, sizeof(smsCmd), "AT+CMGS=\"%s\"", hologramSMSNumber);
+
+  if (sendATcommand(smsCmd, ">", 5000) == 1) {
+    Serial.println(F("Ready to send SMS..."));
+
+    Serial2.print(data);
+    delay(100);
+    Serial2.write(26); // Ctrl+Z
+
+    // Fixed buffer instead of Serial2.readString() (which grows a String
+    // internally — the same risk pattern we just eliminated elsewhere).
+    constexpr size_t RESP_LEN = 80;
+    static char resp[RESP_LEN];
+    size_t idx = 0;
+    resp[0] = '\0';
+
+    unsigned long smsStart = millis();
+    while (millis() - smsStart < 30000) {
+      while (Serial2.available()) {
+        char c = Serial2.read();
+        if (idx < RESP_LEN - 1) {
+          resp[idx++] = c;
+          resp[idx] = '\0';
+        }
+        // Check as we go, so we don't need to wait for the full 30s
+        // once the modem has already answered.
+        if (strstr(resp, "+CMGS:") != NULL) {
+          Serial.println(F("✓ SMS sent to Hologram"));
+          return;
+        }
+        if (strstr(resp, "ERROR") != NULL) {
+          Serial.println(F("✗ SMS error"));
+          return;
+        }
+      }
+      delay(500);
+    }
+    Serial.println(F("⚠ SMS timeout"));
+  } else {
+    Serial.println(F("Failed to initiate SMS"));
+  }
+}
+
+// ===== SEND DATA TO HOLOGRAM OLD =====
+/*
 void sendDataToHologram(String data) {
   
   Serial.println(F("=== Sending to Hologram via SMS ==="));
@@ -776,6 +1061,8 @@ void sendDataToHologram(String data) {
   }
     
 }
+*/
+
 // ===== SLEEP FUNCTION =====
 void sleep(){
   
@@ -993,12 +1280,12 @@ int8_t sendATcommand(const char* ATcommand, const char* expected_answer, unsigne
     //char response[500];
 
     // Replace with:
-    constexpr size_t MAX_RESPONSE_LEN = 200;
-    char response[MAX_RESPONSE_LEN] = {0};
+    constexpr size_t MAX_RESPONSE_LEN = 150;
+    static char response[MAX_RESPONSE_LEN] = {0};
     
     unsigned long previous;
 
-    memset(response, '\0', 200);    // Initialize the string
+    memset(response, '\0', 150);    // Initialize the string
 
     delay(10);
     
